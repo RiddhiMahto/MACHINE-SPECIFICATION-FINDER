@@ -571,7 +571,7 @@ else:
             if st.button(f"{'✓ Active' if is_active else 'Select'}", key=f"typebtn_{label}", use_container_width=True):
                 st.session_state["machine_type"] = label
                 st.session_state["active_source"] = "builtin"
-                st.experimental_rerun()
+                st.rerun()
 
     st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
     mdata, specs, units, groups = BUILTIN_REGISTRY[active_type]
