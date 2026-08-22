@@ -1,388 +1,43 @@
+"""
+Machine Specification System
+=============================
+Streamlit app for looking up, comparing, and browsing heavy-machining
+equipment specifications (Plano Millers, Horizontal Borers, Lathes, Gear
+Cutting machines, etc).
 
-import streamlit as st
+All data is read from an Excel workbook (one sheet per machine type) instead
+of being hardcoded, so updating specs is just an Excel edit + re-deploy -
+no code changes needed. Users can also upload their own workbook at runtime
+to preview a different dataset.
+
+Run locally:
+    streamlit run app.py
+
+Deploy: push this folder to GitHub and point Streamlit Community Cloud at
+app.py. Make sure data/machine_specs.xlsx is committed to the repo.
+"""
+
+import re
 import pandas as pd
-import io
+import streamlit as st
 
-# ================= BUILT-IN MACHINE TYPE DEFINITIONS =================
+from data_loader import load_default_workbook, load_workbook, get_sheet_meta
 
-MACHINE_TYPES = ["PM (Plano Miller)", "HB (Horizontal Boring)", "LT (Lathe)"]
 
-# ─── PM ─────────────────────────────────────────────────────────────────────
-PM_SPECS = [
-    "Max. Length of workpiece", "Max. width of workpiece", "Max. Height of workpiece",
-    "Passage between column", "Length of table", "Width of table",
-    "Table travel - X axis", "Cross travel - Y axis", "Ram travel - Z axis",
-    "Vertical travel - W axis", "Max. angle of swivel of head",
-    "Max. Travel of spindle sleeve", "Spindle Dia.", "Spindle taper",
-    "Load capacity (Kg)", "Ram/Spindle travel", "Maximum RPM",
-]
-PM_UNITS = {
-    "Max. Length of workpiece": "mm", "Max. width of workpiece": "mm",
-    "Max. Height of workpiece": "mm", "Passage between column": "mm",
-    "Length of table": "mm", "Width of table": "mm",
-    "Table travel - X axis": "mm", "Cross travel - Y axis": "mm",
-    "Ram travel - Z axis": "mm", "Vertical travel - W axis": "mm",
-    "Max. angle of swivel of head": "", "Max. Travel of spindle sleeve": "mm",
-    "Spindle Dia.": "mm", "Spindle taper": "",
-    "Load capacity (Kg)": "Kg", "Ram/Spindle travel": "mm", "Maximum RPM": "RPM",
-}
-PM_GROUPS = {
-    "Workpiece Envelope": ["Max. Length of workpiece", "Max. width of workpiece", "Max. Height of workpiece"],
-    "Table Dimensions": ["Length of table", "Width of table", "Passage between column", "Load capacity (Kg)"],
-    "Axis Travel": ["Table travel - X axis", "Cross travel - Y axis", "Ram travel - Z axis", "Vertical travel - W axis", "Ram/Spindle travel"],
-    "Spindle & Head": ["Max. angle of swivel of head", "Max. Travel of spindle sleeve", "Spindle Dia.", "Spindle taper", "Maximum RPM"],
-}
-_pm_raw = {
-    382: {"Max. width of workpiece": 800, "Max. Height of workpiece": 800, "Length of table": 3000, "Width of table": 300, "Table travel - X axis": 3550, "Max. angle of swivel of head": "30 Deg.", "Max. Travel of spindle sleeve": 200},
-    385: {"Max. width of workpiece": 2800, "Max. Height of workpiece": 2500, "Passage between column": 3300, "Length of table": 9200, "Width of table": 2800, "Spindle Dia.": 200, "Spindle taper": "ISO 60"},
-    386: {"Passage between column": 3050, "Width of table": 2500, "Table travel - X axis": 6700, "Vertical travel - W axis": 2000, "Load capacity (Kg)": 98000, "Ram/Spindle travel": 1000},
-    387: {"Max. Length of workpiece": 7000, "Max. width of workpiece": 1500, "Max. Height of workpiece": 1500, "Maximum RPM": 900},
-    388: {"Passage between column": 2500, "Length of table": 6000, "Width of table": 2200, "Table travel - X axis": 6000, "Cross travel - Y axis": 3290, "Ram travel - Z axis": 800, "Vertical travel - W axis": 3450, "Load capacity (Kg)": 40000},
-    389: {"Max. Height of workpiece": 2500, "Passage between column": 2500, "Length of table": 5000, "Width of table": 2000, "Table travel - X axis": 6750, "Cross travel - Y axis": 4050, "Ram travel - Z axis": 710, "Vertical travel - W axis": 1700, "Max. angle of swivel of head": "45 Deg.", "Spindle taper": "ISO 50", "Load capacity (Kg)": 20000, "Maximum RPM": 3000},
-    390: {"Passage between column": 5000, "Width of table": 4000, "Vertical travel - W axis": 2000},
-    391: {"Passage between column": 2500, "Length of table": 3000, "Width of table": 2000, "Table travel - X axis": 4000, "Cross travel - Y axis": 3500, "Ram travel - Z axis": 1500, "Vertical travel - W axis": 1500, "Load capacity (Kg)": 10000, "Maximum RPM": 6000},
-    402: {"Max. Length of workpiece": 6000, "Max. width of workpiece": 1500, "Max. Height of workpiece": 1500, "Maximum RPM": 900},
-}
-PM_DATA = {mn: {spec: raw.get(spec, None) for spec in PM_SPECS} for mn, raw in _pm_raw.items()}
-
-# ─── HB ─────────────────────────────────────────────────────────────────────
-HB_SPECS = [
-    "Spindle Diameter", "Max. Dia. Of Job rotated on table", "Tool taper", "RAM Section",
-    "Travel of column X axis", "Vertical travel Y axis", "Spindle travel Z axis",
-    "RAM travel W axis", "Max. Travel Z + W axes", "Max. RPM", "Table dimension",
-    "Travel of table V axis/ Travel of column", "Load capacity (Kg)",
-    "Min. Distance between spindle centre and top of table",
-]
-HB_UNITS = {
-    "Spindle Diameter": "mm", "Max. Dia. Of Job rotated on table": "mm",
-    "Tool taper": "", "RAM Section": "mm",
-    "Travel of column X axis": "mm", "Vertical travel Y axis": "mm",
-    "Spindle travel Z axis": "mm", "RAM travel W axis": "mm",
-    "Max. Travel Z + W axes": "mm", "Max. RPM": "RPM",
-    "Table dimension": "mm", "Travel of table V axis/ Travel of column": "mm",
-    "Load capacity (Kg)": "Kg", "Min. Distance between spindle centre and top of table": "mm",
-}
-HB_GROUPS = {
-    "Spindle & Head": ["Spindle Diameter", "Tool taper", "RAM Section", "Max. RPM"],
-    "Axis Travel": ["Travel of column X axis", "Vertical travel Y axis", "Spindle travel Z axis", "RAM travel W axis", "Max. Travel Z + W axes", "Travel of table V axis/ Travel of column"],
-    "Table & Workpiece": ["Table dimension", "Max. Dia. Of Job rotated on table", "Load capacity (Kg)", "Min. Distance between spindle centre and top of table"],
-}
-_hb_raw = {
-    305: {"Spindle Diameter": 100, "Tool taper": "Morse 6", "Travel of column X axis": 1600, "Max. RPM": 1120, "Table dimension": "1250 x 1250", "Travel of table V axis/ Travel of column": 1250, "Load capacity (Kg)": 3000, "Min. Distance between spindle centre and top of table": 0},
-    311: {"Spindle Diameter": 125, "Tool taper": "M 80", "Travel of column X axis": 1800, "Vertical travel Y axis": 1500, "Spindle travel Z axis": 1100, "Table dimension": "2000 x 1800", "Travel of table V axis/ Travel of column": 2000, "Load capacity (Kg)": 6000},
-    320: {"Spindle Diameter": 200, "Max. Dia. Of Job rotated on table": 12400, "Tool taper": "M 120", "RAM Section": "530 x 530", "Travel of column X axis": 8000, "Vertical travel Y axis": 3150, "Spindle travel Z axis": 2000, "RAM travel W axis": 1600, "Max. Travel Z + W axes": 2000, "Max. RPM": 630, "Table dimension": "3150 x 2800", "Travel of table V axis/ Travel of column": 2000, "Load capacity (Kg)": 32000},
-    322: {"Spindle Diameter": 200, "Max. Dia. Of Job rotated on table": 10000, "Tool taper": "ISO 60", "RAM Section": "720 x 460", "Travel of column X axis": 8000, "Vertical travel Y axis": 4000, "Spindle travel Z axis": 1400, "RAM travel W axis": 1200, "Max. Travel Z + W axes": 2600, "Max. RPM": 800, "Table dimension": "3000 x 2500", "Travel of table V axis/ Travel of column": 2000, "Load capacity (Kg)": 60000, "Min. Distance between spindle centre and top of table": 500},
-    323: {"Max. Dia. Of Job rotated on table": 1600, "Travel of column X axis": 2000, "Vertical travel Y axis": 1250, "Spindle travel Z axis": 800, "Table dimension": "2000 x 1600", "Travel of table V axis/ Travel of column": 1000, "Load capacity (Kg)": 12000},
-    324: {"Spindle Diameter": 203.4, "Max. Dia. Of Job rotated on table": 14000, "Tool taper": "ISO 60", "RAM Section": "440 x 480", "Travel of column X axis": 10000, "Vertical travel Y axis": 4400, "Spindle travel Z axis": 1000, "RAM travel W axis": 1200, "Max. Travel Z + W axes": 2200, "Max. RPM": 800, "Table dimension": "4000 x 4000", "Travel of table V axis/ Travel of column": 3000, "Load capacity (Kg)": 100000, "Min. Distance between spindle centre and top of table": 270},
-    325: {"Tool taper": "ISO 45", "Travel of column X axis": 1750, "Vertical travel Y axis": 1300, "Max. RPM": 3600, "Table dimension": "1000 x 1000", "Travel of table V axis/ Travel of column": 1000, "Load capacity (Kg)": 1800, "Min. Distance between spindle centre and top of table": 75},
-    326: {"Spindle Diameter": 130, "Travel of column X axis": 2000, "Vertical travel Y axis": 2000, "Spindle travel Z axis": 800, "Max. RPM": 1000, "Table dimension": "1800 x 1600", "Travel of table V axis/ Travel of column": 1250},
-    327: {"Spindle Diameter": 200, "Tool taper": "ISO 60", "RAM Section": "520 x 520", "Travel of column X axis": 10000, "Vertical travel Y axis": 4000, "Spindle travel Z axis": 2000, "RAM travel W axis": 1600},
-    328: {"Spindle Diameter": 200, "Tool taper": "ISO 60", "RAM Section": "520 x 520", "Travel of column X axis": 10500, "Vertical travel Y axis": 4500, "Spindle travel Z axis": 1600, "RAM travel W axis": 1400, "Max. Travel Z + W axes": 3000, "Max. RPM": 1600, "Table dimension": "4000 x 4000", "Travel of table V axis/ Travel of column": 4000, "Load capacity (Kg)": 100000},
-    329: {"Spindle Diameter": 200, "Tool taper": "ISO 60", "Travel of column X axis": 9500, "Vertical travel Y axis": 4000, "Spindle travel Z axis": 2000, "RAM travel W axis": 1600, "Table dimension": "4000 x 3500", "Travel of table V axis/ Travel of column": 2700, "Load capacity (Kg)": 63000},
-    330: {"Spindle Diameter": 125, "Travel of column X axis": 3000, "Vertical travel Y axis": 2000, "Spindle travel Z axis": 800, "Max. RPM": 1600, "Table dimension": "2000 x 1600", "Travel of table V axis/ Travel of column": 1500, "Load capacity (Kg)": 15000},
-    331: {"Spindle Diameter": 200, "Tool taper": "ISO 60", "Travel of column X axis": 4000, "Vertical travel Y axis": 3150, "Spindle travel Z axis": 2000, "RAM travel W axis": 1600, "Table dimension": "3600 x 3600", "Travel of table V axis/ Travel of column": 2000, "Load capacity (Kg)": 35000},
-    332: {"Spindle Diameter": 160, "Tool taper": "M 100", "Travel of column X axis": 3250, "Vertical travel Y axis": 3150, "Spindle travel Z axis": 1600, "RAM travel W axis": 1250, "Table dimension": "2000 x 2000", "Travel of table V axis/ Travel of column": 1200, "Load capacity (Kg)": 20000},
-    334: {"Spindle Diameter": 160, "Tool taper": "ISO 60", "Travel of column X axis": 4000, "Vertical travel Y axis": 3000, "Spindle travel Z axis": 1000, "Max. RPM": 2000, "Table dimension": "3000 x 2500", "Travel of table V axis/ Travel of column": 1600, "Load capacity (Kg)": 25000},
-    335: {"Spindle Diameter": 160, "Tool taper": "ISO 60", "Travel of column X axis": 4000, "Vertical travel Y axis": 3000, "Spindle travel Z axis": 1000, "Max. RPM": 2000, "Table dimension": "3000 x 2500", "Travel of table V axis/ Travel of column": 1600, "Load capacity (Kg)": 25000},
-    337: {},
-    338: {},
-    339: {"Spindle Diameter": 120, "Travel of column X axis": 1250, "Vertical travel Y axis": 1250, "Spindle travel Z axis": 1000, "Max. RPM": 8000, "Table dimension": "1250 x 1100", "Load capacity (Kg)": 2800},
-    340: {"Travel of column X axis": 3000, "Vertical travel Y axis": 2000, "Spindle travel Z axis": 2000, "Table dimension": "2000 x 1600", "Travel of table V axis/ Travel of column": 800, "Load capacity (Kg)": 20000},
-    341: {"Travel of column X axis": 3000, "Vertical travel Y axis": 2000, "Spindle travel Z axis": 2000, "Table dimension": "2000 x 1600", "Travel of table V axis/ Travel of column": 800, "Load capacity (Kg)": 20000},
-    342: {},
-}
-HB_DATA = {mn: {spec: raw.get(spec, None) for spec in HB_SPECS} for mn, raw in _hb_raw.items()}
-
-# ─── LT (Lathe) ─────────────────────────────────────────────────────────────
-LT_SPECS = [
-    "Swing over bed", "Swing over carriage", "Distance between centres",
-    "Maximum wt. bet. Centres", "Maximum weight between centres without steady",
-    "Maximum weight between centres with one steady", "Maximum weight between centres with two steady",
-    "Cross slide travel (X axis)", "Maximum movement in Z axis", "Width of bed",
-    "Spindle bore dia.", "Minimum dia. Of steady rest", "Maximum dia. Of steady rest",
-    "Tail stock quill dia.", "Tail stock quill travel",
-]
-LT_UNITS = {
-    "Swing over bed": "mm", "Swing over carriage": "mm", "Distance between centres": "mm",
-    "Maximum wt. bet. Centres": "Kg", "Maximum weight between centres without steady": "Kg",
-    "Maximum weight between centres with one steady": "Kg", "Maximum weight between centres with two steady": "Kg",
-    "Cross slide travel (X axis)": "mm", "Maximum movement in Z axis": "mm", "Width of bed": "mm",
-    "Spindle bore dia.": "mm", "Minimum dia. Of steady rest": "mm", "Maximum dia. Of steady rest": "mm",
-    "Tail stock quill dia.": "mm", "Tail stock quill travel": "mm",
-}
-LT_GROUPS = {
-    "Swing & Centres": ["Swing over bed", "Swing over carriage", "Distance between centres"],
-    "Weight Capacity": ["Maximum wt. bet. Centres", "Maximum weight between centres without steady",
-                        "Maximum weight between centres with one steady", "Maximum weight between centres with two steady"],
-    "Bed & Axis Travel": ["Width of bed", "Cross slide travel (X axis)", "Maximum movement in Z axis"],
-    "Spindle & Tailstock": ["Spindle bore dia.", "Minimum dia. Of steady rest", "Maximum dia. Of steady rest",
-                            "Tail stock quill dia.", "Tail stock quill travel"],
-}
-_lt_raw = {
-    160: {"Swing over bed": 2000, "Swing over carriage": 1600, "Distance between centres": 8000, "Maximum wt. bet. Centres": 50000, "Width of bed": 1700, "Maximum dia. Of steady rest": 1000},
-    174: {"Swing over bed": 1520, "Swing over carriage": 1100, "Distance between centres": 4000, "Maximum wt. bet. Centres": 10000, "Cross slide travel (X axis)": 750, "Spindle bore dia.": 104, "Minimum dia. Of steady rest": 140, "Maximum dia. Of steady rest": 600, "Tail stock quill travel": 300},
-    176: {"Swing over bed": 3000, "Swing over carriage": 2500, "Distance between centres": 6000, "Maximum wt. bet. Centres": 30000, "Cross slide travel (X axis)": 1000, "Width of bed": 1500, "Spindle bore dia.": 105, "Tail stock quill dia.": 280, "Tail stock quill travel": 200},
-    177: {"Swing over bed": 800, "Swing over carriage": 600, "Distance between centres": 3000, "Width of bed": 750, "Spindle bore dia.": 104, "Tail stock quill travel": None},
-    178: {"Swing over bed": 800, "Swing over carriage": 600, "Distance between centres": 4000, "Width of bed": 750},
-    179: {"Swing over bed": 800, "Swing over carriage": 600, "Distance between centres": 4000, "Width of bed": 750, "Spindle bore dia.": 104},
-    180: {"Swing over bed": 1600, "Swing over carriage": 1320, "Distance between centres": 5000, "Width of bed": 1300, "Spindle bore dia.": 150, "Tail stock quill dia.": 240, "Tail stock quill travel": 270,
-          "Maximum weight between centres without steady": 10000, "Maximum weight between centres with one steady": 17500, "Maximum weight between centres with two steady": 22500},
-    181: {"Swing over bed": 1300, "Swing over carriage": 1000, "Distance between centres": 4000, "Maximum wt. bet. Centres": 10000, "Cross slide travel (X axis)": 580, "Spindle bore dia.": 110, "Tail stock quill dia.": 180, "Tail stock quill travel": 200},
-    182: {"Swing over bed": 1300, "Swing over carriage": 1000, "Distance between centres": 4000, "Maximum wt. bet. Centres": 10000, "Cross slide travel (X axis)": 580, "Spindle bore dia.": 110, "Tail stock quill dia.": 180, "Tail stock quill travel": 200},
-    183: {"Swing over bed": 1300, "Swing over carriage": 1000, "Distance between centres": 4000, "Maximum wt. bet. Centres": 10000, "Cross slide travel (X axis)": 580, "Spindle bore dia.": 110, "Tail stock quill dia.": 180, "Tail stock quill travel": 200},
-    184: {"Swing over bed": 650, "Swing over carriage": 380, "Distance between centres": 2000, "Maximum wt. bet. Centres": 3000, "Spindle bore dia.": 105, "Tail stock quill dia.": 100, "Tail stock quill travel": 180},
-    172: {"Swing over bed": 610, "Swing over carriage": 350, "Distance between centres": 2000, "Maximum wt. bet. Centres": 1000, "Cross slide travel (X axis)": 350, "Spindle bore dia.": 103, "Tail stock quill travel": 125},
-    103: {"Swing over bed": 530, "Swing over carriage": 360, "Distance between centres": 3000, "Cross slide travel (X axis)": 255, "Width of bed": 325, "Spindle bore dia.": 42, "Tail stock quill travel": 200},
-    111: {"Swing over bed": 575, "Swing over carriage": 545, "Distance between centres": 3000, "Cross slide travel (X axis)": 300, "Width of bed": 415},
-    120: {"Swing over bed": 900, "Swing over carriage": 570, "Distance between centres": 4000, "Spindle bore dia.": 105, "Tail stock quill travel": None},
-    121: {"Swing over bed": 900, "Swing over carriage": 570, "Distance between centres": 3000, "Spindle bore dia.": 105, "Tail stock quill travel": 325},
-    175: {"Swing over bed": 900, "Swing over carriage": 570, "Distance between centres": 3000, "Maximum movement in Z axis": 4000, "Spindle bore dia.": 105, "Tail stock quill travel": 325},
-    124: {"Swing over bed": 900, "Swing over carriage": 570, "Distance between centres": 2000, "Tail stock quill travel": 325},
-    127: {"Swing over bed": 1400, "Swing over carriage": 1100, "Distance between centres": 6000, "Maximum wt. bet. Centres": 20000},
-}
-LT_DATA = {mn: {spec: raw.get(spec, None) for spec in LT_SPECS} for mn, raw in _lt_raw.items()}
-
-# ================= REGISTRY =================
-
-BUILTIN_REGISTRY = {
-    "PM (Plano Miller)":        (PM_DATA, PM_SPECS, PM_UNITS, PM_GROUPS),
-    "HB (Horizontal Boring)":   (HB_DATA, HB_SPECS, HB_UNITS, HB_GROUPS),
-    "LT (Lathe)":               (LT_DATA, LT_SPECS, LT_UNITS, LT_GROUPS),
-}
-
-TYPE_ACCENT = {
-    "PM (Plano Miller)":       "#f0a500",
-    "HB (Horizontal Boring)":  "#4a9eff",
-    "LT (Lathe)":              "#00c17c",
-}
-UPLOADED_ACCENT = "#c084fc"
-
-# ================= HELPERS =================
-
-def format_value(spec, value, units):
-    if value is None:
-        return "—"
-    unit = units.get(spec, "")
-    if unit and not str(value).endswith(unit):
-        return "{} {}".format(value, unit)
-    return str(value)
-
-def build_comparison_df(machines, mdata, specs, units):
-    rows = []
-    for spec in specs:
-        unit = units.get(spec, "")
-        label = "{} ({})".format(spec, unit) if unit else spec
-        row = {"Parameter": label}
-        for m in machines:
-            val = mdata[m].get(spec)
-            row["Machine {}".format(m)] = val if val is not None else "—"
-        rows.append(row)
-    return pd.DataFrame(rows)
-
-def count_available(mn, mdata, specs):
-    return sum(1 for s in specs if mdata[mn].get(s) is not None)
-
-def get_min_max_machine(spec, mdata):
-    values = []
-    for mn, d in mdata.items():
-        v = d.get(spec)
-        if isinstance(v, (int, float)):
-            values.append((mn, v))
-    if not values:
-        return None
-    max_machine, max_value = max(values, key=lambda x: x[1])
-    min_machine, min_value = min(values, key=lambda x: x[1])
-    return {"max_machine": max_machine, "max_value": max_value,
-            "min_machine": min_machine, "min_value": min_value}
-
-def parse_uploaded_excel(uploaded_file):
+def h(template: str) -> str:
     """
-    Parse an uploaded Excel file into (mdata, specs, units, groups).
-
-    Expected Excel format — TWO SUPPORTED LAYOUTS:
-
-    LAYOUT A — Parameters as rows (recommended):
-      • Column 1 : "Parameter" (parameter names)
-      • Column 2 : "Unit"      (optional — units for each parameter)
-      • Column 3+ : Machine numbers as headers (e.g. 101, 102, ...)
-
-    LAYOUT B — Parameters as columns:
-      • Row 1  : header row — first cell "Machine No." or "Machine", rest = parameter names
-      • Row 1b : optional second header row with units (if first non-number row after header)
-      • Remaining rows: each row = one machine
-
-    Returns (mdata, specs, units, groups) or raises ValueError with a user-friendly message.
+    Collapse a multi-line HTML template into a single line before handing it
+    to st.markdown(). Streamlit's Markdown renderer treats any line indented
+    4+ spaces as a code block, so an indented multi-line f-string can leak
+    raw tags (e.g. a stray "</div>") into the page. Flattening to one line
+    sidesteps that entirely - this is the fix, not just tidying.
     """
-    try:
-        df_raw = pd.read_excel(uploaded_file, header=None)
-    except Exception as e:
-        raise ValueError(f"Could not read Excel file: {e}")
-
-    if df_raw.empty:
-        raise ValueError("The uploaded Excel file is empty.")
-
-    # Detect layout by checking first cell
-    first_cell = str(df_raw.iloc[0, 0]).strip().lower()
-
-    # ── LAYOUT A: first column = "Parameter" ─────────────────────────────────
-    if first_cell in ("parameter", "parameters", "spec", "specification", "specifications"):
-        has_unit_col = str(df_raw.iloc[0, 1]).strip().lower() in ("unit", "units") if df_raw.shape[1] > 1 else False
-
-        if has_unit_col:
-            machine_col_start = 2
-        else:
-            machine_col_start = 1
-
-        # Machine numbers from header row
-        machine_numbers = []
-        for col_idx in range(machine_col_start, df_raw.shape[1]):
-            val = df_raw.iloc[0, col_idx]
-            if pd.notna(val) and str(val).strip():
-                try:
-                    machine_numbers.append(int(float(str(val).strip())))
-                except ValueError:
-                    machine_numbers.append(str(val).strip())
-
-        if not machine_numbers:
-            raise ValueError("No machine numbers found in the header row.")
-
-        specs = []
-        units = {}
-        mdata = {mn: {} for mn in machine_numbers}
-
-        for row_idx in range(1, df_raw.shape[0]):
-            param = str(df_raw.iloc[row_idx, 0]).strip()
-            if not param or param.lower() in ("nan", "none", ""):
-                continue
-            specs.append(param)
-            unit = ""
-            if has_unit_col:
-                u = df_raw.iloc[row_idx, 1]
-                unit = "" if pd.isna(u) else str(u).strip()
-            units[param] = unit
-            for i, mn in enumerate(machine_numbers):
-                col_idx = machine_col_start + i
-                if col_idx < df_raw.shape[1]:
-                    raw_val = df_raw.iloc[row_idx, col_idx]
-                    if pd.isna(raw_val) or str(raw_val).strip() in ("", "nan", "None", "-", "—"):
-                        mdata[mn][param] = None
-                    else:
-                        try:
-                            mdata[mn][param] = float(raw_val) if "." in str(raw_val) else int(float(str(raw_val)))
-                        except (ValueError, TypeError):
-                            mdata[mn][param] = str(raw_val).strip()
-                else:
-                    mdata[mn][param] = None
-
-    # ── LAYOUT B: first column = "Machine No." ───────────────────────────────
-    else:
-        # Try to use first row as header
-        header_row = df_raw.iloc[0]
-        params = []
-        param_col_start = 1
-        for col_idx in range(param_col_start, df_raw.shape[1]):
-            p = str(header_row[col_idx]).strip()
-            if p and p.lower() not in ("nan", "none"):
-                params.append(p)
-
-        if not params:
-            raise ValueError(
-                "Could not detect layout. Please ensure your Excel file has:\n"
-                "• Layout A: First column = 'Parameter', second = 'Unit' (optional), then machine numbers as headers\n"
-                "• Layout B: First column = 'Machine No.', then parameter names as headers"
-            )
-
-        specs = params
-        units = {p: "" for p in params}
-
-        # Check if second row looks like a units row (all text, no numbers)
-        data_start = 1
-        if df_raw.shape[0] > 1:
-            second_row = df_raw.iloc[1]
-            is_units_row = True
-            for col_idx in range(param_col_start, param_col_start + len(params)):
-                if col_idx < df_raw.shape[1]:
-                    v = str(second_row[col_idx]).strip()
-                    if v and v.lower() not in ("nan", "none"):
-                        try:
-                            float(v)
-                            is_units_row = False
-                            break
-                        except ValueError:
-                            pass
-            if is_units_row:
-                for i, p in enumerate(params):
-                    col_idx = param_col_start + i
-                    if col_idx < df_raw.shape[1]:
-                        u = str(second_row[col_idx]).strip()
-                        units[p] = "" if u.lower() in ("nan", "none", "") else u
-                data_start = 2
-
-        mdata = {}
-        for row_idx in range(data_start, df_raw.shape[0]):
-            mn_raw = df_raw.iloc[row_idx, 0]
-            if pd.isna(mn_raw) or str(mn_raw).strip() in ("", "nan"):
-                continue
-            try:
-                mn = int(float(str(mn_raw).strip()))
-            except ValueError:
-                mn = str(mn_raw).strip()
-            mdata[mn] = {}
-            for i, p in enumerate(params):
-                col_idx = param_col_start + i
-                if col_idx < df_raw.shape[1]:
-                    raw_val = df_raw.iloc[row_idx, col_idx]
-                    if pd.isna(raw_val) or str(raw_val).strip() in ("", "nan", "None", "-", "—"):
-                        mdata[mn][p] = None
-                    else:
-                        try:
-                            mdata[mn][p] = float(raw_val) if "." in str(raw_val) else int(float(str(raw_val)))
-                        except (ValueError, TypeError):
-                            mdata[mn][p] = str(raw_val).strip()
-                else:
-                    mdata[mn][p] = None
-
-    if not mdata:
-        raise ValueError("No machine data rows were found in the uploaded file.")
-
-    # Auto-generate a single group containing all specs
-    groups = {"All Parameters": specs}
-
-    return mdata, specs, units, groups
+    return re.sub(r">\s+<", "><", re.sub(r"\s+", " ", template)).strip()
 
 
-def generate_template_excel(layout="A"):
-    """Generate a downloadable Excel template for users to fill in."""
-    output = io.BytesIO()
-    if layout == "A":
-        # Layout A: Parameters as rows
-        sample_data = {
-            "Parameter": ["Spindle Diameter", "Max. RPM", "Table dimension", "Load capacity (Kg)"],
-            "Unit": ["mm", "RPM", "mm", "Kg"],
-            "101": [150, 1200, "2000 x 1600", 15000],
-            "102": [200, 800, "3000 x 2500", 30000],
-            "103": [None, 1600, "1500 x 1200", 8000],
-        }
-        df = pd.DataFrame(sample_data)
-    else:
-        # Layout B: Parameters as columns
-        sample_data = {
-            "Machine No.": ["Unit", 101, 102, 103],
-            "Spindle Diameter": ["mm", 150, 200, None],
-            "Max. RPM": ["RPM", 1200, 800, 1600],
-            "Table dimension": ["mm", "2000 x 1600", "3000 x 2500", "1500 x 1200"],
-            "Load capacity (Kg)": ["Kg", 15000, 30000, 8000],
-        }
-        df = pd.DataFrame(sample_data)
-
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Machine Specs")
-    output.seek(0)
-    return output.getvalue()
-
-
-# ================= PAGE CONFIG =================
-
+# --------------------------------------------------------------------------
+# Page config + styling
+# --------------------------------------------------------------------------
 st.set_page_config(
     page_title="Machine Specification System",
     page_icon="⚙️",
@@ -390,353 +45,463 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ================= SESSION STATE =================
-
-if "machine_type" not in st.session_state:
-    st.session_state["machine_type"] = MACHINE_TYPES[0]
-if "uploaded_data" not in st.session_state:
-    st.session_state["uploaded_data"] = None   # (name, mdata, specs, units, groups)
-if "active_source" not in st.session_state:
-    st.session_state["active_source"] = "builtin"   # "builtin" or "uploaded"
-
-# ================= GLOBAL CSS =================
-
-st.markdown("""
+st.markdown(h("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap');
-html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-.stApp { background-color: #0f1117; }
-#MainMenu, footer, header { visibility: hidden; }
-.block-container { padding-top: 0 !important; padding-bottom: 2rem !important; max-width: 1400px !important; }
-.header-banner { background: linear-gradient(135deg,#1a1d27 0%,#12151f 100%); border-bottom: 2px solid #f0a500; padding: 1.4rem 2.5rem; display: flex; align-items: center; justify-content: space-between; }
-.header-title { font-size: 1.5rem; font-weight: 600; color: #ffffff; letter-spacing: 0.04em; text-transform: uppercase; margin: 0; }
-.header-subtitle { font-size: 0.78rem; color: #f0a500; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 2px; }
-.header-badge { background: #f0a500; color: #0f1117; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.1em; padding: 4px 12px; border-radius: 2px; text-transform: uppercase; }
-.metric-card { background: #1a1d27; border: 1px solid #2a2e3e; border-radius: 4px; padding: 1.2rem 1.4rem; text-align: center; }
-.metric-label { font-size: 0.68rem; letter-spacing: 0.12em; text-transform: uppercase; color: #6b7080; margin-bottom: 0.4rem; }
-.metric-value { font-family: 'JetBrains Mono', monospace; font-size: 1.6rem; font-weight: 600; color: #f0a500; line-height: 1; }
-.metric-unit { font-size: 0.75rem; color: #8b90a0; margin-top: 4px; }
-.stSelectbox > div > div, .stMultiSelect > div > div { background-color: #1a1d27 !important; border-color: #2a2e3e !important; color: #e8eaf0 !important; border-radius: 4px !important; }
-.stSelectbox label, .stMultiSelect label, .stCheckbox label { color: #8b90a0 !important; font-size: 0.75rem !important; font-weight: 500 !important; letter-spacing: 0.08em !important; text-transform: uppercase !important; }
-.stTabs [data-baseweb="tab-list"] { background-color: #1a1d27; border-bottom: 1px solid #2a2e3e; gap: 0; }
-.stTabs [data-baseweb="tab"] { background-color: transparent !important; color: #6b7080 !important; font-size: 0.75rem !important; font-weight: 600 !important; letter-spacing: 0.1em !important; text-transform: uppercase !important; border-radius: 0 !important; padding: 0.8rem 1.8rem !important; border-bottom: 2px solid transparent !important; }
-.stTabs [aria-selected="true"] { color: #f0a500 !important; border-bottom: 2px solid #f0a500 !important; background-color: transparent !important; }
-.stDataFrame { border: 1px solid #2a2e3e !important; border-radius: 4px !important; }
-.stDownloadButton button { background: transparent !important; border: 1px solid #f0a500 !important; color: #f0a500 !important; font-size: 0.75rem !important; font-weight: 600 !important; letter-spacing: 0.1em !important; text-transform: uppercase !important; border-radius: 2px !important; padding: 0.5rem 1.2rem !important; }
-.stDownloadButton button:hover { background: #f0a500 !important; color: #0f1117 !important; }
-div[data-testid="stButton"] button { background: transparent !important; border: 1px solid #00c17c !important; color: #00c17c !important; font-size: 0.8rem !important; font-weight: 600 !important; letter-spacing: 0.12em !important; text-transform: uppercase !important; border-radius: 2px !important; padding: 0.6rem 1.2rem !important; width: 100% !important; }
-div[data-testid="stButton"] button:hover { background: #00c17c !important; color: #0f1117 !important; }
-div[data-testid="stAlert"] { border-radius: 4px !important; font-size: 0.82rem !important; }
-.upload-box { background: #12151f; border: 2px dashed #2a2e3e; border-radius: 6px; padding: 1.5rem 2rem; margin-bottom: 1rem; }
-.upload-box:hover { border-color: #c084fc; }
-.source-badge-builtin { display:inline-block; background:#1a1d27; border:1px solid #f0a500; color:#f0a500; font-size:0.68rem; font-weight:600; letter-spacing:0.1em; text-transform:uppercase; padding:3px 10px; border-radius:2px; }
-.source-badge-uploaded { display:inline-block; background:#1a1d27; border:1px solid #c084fc; color:#c084fc; font-size:0.68rem; font-weight:600; letter-spacing:0.1em; text-transform:uppercase; padding:3px 10px; border-radius:2px; }
+    .stApp { background-color: #0b0e17; }
+    #MainMenu, footer, header {visibility: hidden;}
+
+    .app-header {
+        background: #11141f; border: 1px solid #2a2f42; border-radius: 10px;
+        padding: 22px 28px; margin-bottom: 20px;
+    }
+    .app-title { color: #ffffff; font-size: 26px; font-weight: 800; margin: 0; }
+    .app-subtitle {
+        color: #f5a623; font-size: 12px; letter-spacing: 1.5px;
+        font-weight: 600; margin-top: 6px;
+    }
+    .badge-pill {
+        display: inline-block; background: #f5a623; color: #1a1000;
+        font-weight: 700; font-size: 12px; letter-spacing: 1px;
+        padding: 6px 14px; border-radius: 6px;
+    }
+    .section-label {
+        color: #9aa3b5; font-size: 12px; font-weight: 700; letter-spacing: 1px;
+        text-transform: uppercase; margin-bottom: 10px;
+    }
+
+    /* ---- machine-type selector cards ---- */
+    /* The card (icon/label/count) and the SELECT/ACTIVE button below it are
+       two separate elements (HTML div + native Streamlit button). To read as
+       one seamless control instead of two mismatched rounded shapes, the card
+       only rounds its top corners and the button (further down) only rounds
+       its bottom corners, the gap Streamlit inserts between them is removed,
+       and the button's border/background are made to match the card exactly. */
+    .type-card {
+        border-radius: 10px 10px 0 0; padding: 16px 8px 14px; text-align: center;
+        border-bottom: none; position: relative; z-index: 1;
+    }
+    .type-card .icon { font-size: 22px; line-height: 1; }
+    .type-card .label {
+        font-weight: 800; margin-top: 6px; font-size: 13px; line-height: 1.25;
+    }
+    .type-card .label .label-full { font-weight: 700; opacity: 0.85; }
+    .type-card .count { font-size: 11px; margin-top: 2px; }
+
+    /* Pull the button up flush against the card, killing Streamlit's default
+       element spacing, and give it matching flat-top / rounded-bottom shape.
+       Selectors are written several redundant ways (data-testid, class name,
+       plain "button" fallback) because Streamlit has renamed these testids
+       across versions - this makes the rule survive that. Every rule is
+       !important because Streamlit's own button CSS is otherwise more
+       specific / loaded later. */
+    div.stButton, div[data-testid="stButton"], div[class*="stButton"] {
+        margin-top: -1px !important;
+    }
+    div.stButton button,
+    div[data-testid="stButton"] button,
+    div[class*="stButton"] button {
+        border-radius: 0 0 10px 10px !important;
+        border-top: none !important;
+        min-height: 44px !important; /* comfortable tap target on mobile */
+        font-weight: 700 !important;
+        font-size: 12px !important;
+        letter-spacing: 0.5px !important;
+        box-shadow: none !important;
+        width: 100% !important;
+    }
+    div.stButton button[kind="primary"],
+    div[data-testid="stButton"] button[kind="primary"],
+    div[class*="stButton"] button[kind="primary"] {
+        background-color: #f5c518 !important;
+        color: #1a1400 !important;
+        border: 1px solid #f5c518 !important;
+        border-top: none !important;
+    }
+    div.stButton button[kind="primary"]:hover,
+    div[data-testid="stButton"] button[kind="primary"]:hover,
+    div[class*="stButton"] button[kind="primary"]:hover {
+        background-color: #dcae0f !important;
+        color: #1a1400 !important;
+    }
+    div.stButton button[kind="secondary"],
+    div[data-testid="stButton"] button[kind="secondary"],
+    div[class*="stButton"] button[kind="secondary"] {
+        background-color: #11141f !important;
+        color: #cbd2e0 !important;
+        border: 1px solid #2a2f42 !important;
+        border-top: none !important;
+    }
+    div.stButton button[kind="secondary"]:hover,
+    div[data-testid="stButton"] button[kind="secondary"]:hover,
+    div[class*="stButton"] button[kind="secondary"]:hover {
+        border-color: #4a5170 !important;
+        color: #ffffff !important;
+    }
+    /* Neutralize Streamlit's focus/active red-ish outline & re-tint it to
+       the app's palette so tapping a card on mobile doesn't flash red. */
+    div.stButton button:focus:not(:active),
+    div[data-testid="stButton"] button:focus:not(:active) {
+        box-shadow: none !important;
+    }
+
+    /* ---- mobile tightening ---- */
+    @media (max-width: 640px) {
+        .app-header { padding: 12px 14px; margin-bottom: 10px; }
+        .app-title { font-size: 16px; }
+        .app-subtitle { font-size: 9.5px; letter-spacing: 1px; margin-top: 3px; }
+        .section-label { font-size: 10px; margin-bottom: 5px; }
+
+        div[data-testid="stExpander"] summary { padding: 6px 10px !important; min-height: 0 !important; }
+        div[data-testid="stExpander"] summary p { font-size: 11.5px !important; }
+        div[data-testid="stExpander"] div[data-testid="stFileUploaderDropzone"] { padding: 8px !important; }
+
+        .type-card { padding: 6px 3px 5px; }
+        .type-card .icon { font-size: 13px; }
+        .type-card .label { font-size: 11px; margin-top: 2px; }
+        .type-card .label .label-full { display: none; }
+        .type-card .count { font-size: 8px; margin-top: 1px; }
+        div.stButton button, div[data-testid="stButton"] button {
+            font-size: 8.5px !important;
+            padding: 4px 2px !important;
+            min-height: 26px !important;
+            letter-spacing: 0.2px !important;
+        }
+
+        .source-banner { padding: 7px 10px; margin: 8px 0; }
+        .source-banner .badge-pill { font-size: 9.5px; padding: 3px 8px; }
+        .source-banner > div:last-child { font-size: 10px !important; }
+
+        div[data-testid="stTabs"] button[data-baseweb="tab"] { padding: 6px 8px !important; }
+        div[data-testid="stTabs"] button[data-baseweb="tab"] p { font-size: 11px !important; }
+
+        .card { height: auto; min-height: 90px; padding: 10px 8px; }
+        .placeholder-card { padding: 24px 14px; font-size: 11px; }
+    }
+
+    /* ---- keep the machine-type row side-by-side even on mobile ---- */
+    /* Scoped to the type-selector container only (via st.container(key=...))
+       so the lookup form's columns elsewhere in the app can still stack
+       normally on narrow screens - only these 3 cards need to stay in a row. */
+    div.st-key-type_selector div[data-testid="stHorizontalBlock"] {
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        gap: 6px !important;
+    }
+    div.st-key-type_selector div[data-testid="stColumn"] {
+        flex: 1 1 0 !important;
+        width: auto !important;
+        min-width: 0 !important;
+    }
+
+    /* ---- data-source banner ---- */
+    .source-banner {
+        border-left: 3px solid #f5a623; background: #11141f;
+        padding: 14px 18px; border-radius: 0 8px 8px 0; margin: 18px 0;
+        display: flex; justify-content: space-between; align-items: center;
+        flex-wrap: wrap; gap: 8px;
+    }
+
+    /* ---- result cards (Spec Lookup tab) ---- */
+    /* Every card in this group shares the exact same shape: dark body,
+       thin neutral border all around, plus a 3px colored top accent bar.
+       Only the accent color + label color change between card types. */
+    .card {
+        background: #11141f; border: 1px solid #2a2f42; border-top: 3px solid #3a3f52;
+        border-radius: 8px; padding: 20px 16px; height: 128px; box-sizing: border-box;
+        display: flex; flex-direction: column; justify-content: center;
+        align-items: center; text-align: center;
+    }
+    .card-label {
+        color: #9aa3b5; font-size: 11px; font-weight: 700; letter-spacing: 1.2px;
+        text-transform: uppercase; margin-bottom: 8px;
+    }
+    .card-value { font-weight: 800; line-height: 1.2; word-break: break-word; color: #ffffff; }
+    .card-sub { font-size: 12px; color: #6b7280; margin-top: 6px; }
+    .machine-name { color: #cbd2e0; font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+
+    .card-machine { border-top-color: #f5a623; }
+    .card-machine .card-label { color: #f5a623; }
+    .card-machine .card-value { color: #f5a623; font-size: 30px; }
+
+    .card-parameter { border-top-color: #4a9eff; }
+    .card-parameter .card-label { color: #4a9eff; }
+    .card-parameter .card-value { color: #4a9eff; font-size: 16px; }
+
+    .card-result { border-top-color: #f5a623; }
+    .card-result .card-value { font-size: 32px; }
+    .card-result .card-value.small { font-size: 18px; color: #7d8494; }
+
+    .card-max { border-top-color: #34d399; }
+    .card-max .card-label { color: #34d399; }
+    .card-max .card-value { color: #34d399; font-size: 28px; }
+
+    .card-min { border-top-color: #4a9eff; }
+    .card-min .card-label { color: #4a9eff; }
+    .card-min .card-value { color: #4a9eff; font-size: 28px; }
+
+    .placeholder-card {
+        background: #11141f; border: 1px dashed #2a2f42; border-radius: 10px;
+        padding: 40px 20px; text-align: center; color: #5b6377;
+        font-size: 13px; letter-spacing: 0.5px; height: 100%;
+        display: flex; align-items: center; justify-content: center;
+    }
+
+    .app-footer {
+        text-align: center; color: #5b6377; font-size: 12px; margin-top: 34px;
+    }
+
+    section[data-testid="stSidebar"] { background: #0b0e17; }
 </style>
-""", unsafe_allow_html=True)
+"""), unsafe_allow_html=True)
 
-# ================= HEADER =================
-
-st.markdown("""
-<div class="header-banner">
-    <div>
-        <div class="header-title">&#9881; Machine Specification System</div>
-        <div class="header-subtitle">Heavy Machining &nbsp;·&nbsp; Technical Reference Database</div>
-    </div>
-    <div class="header-badge">Industrial Use</div>
+# --------------------------------------------------------------------------
+# Header
+# --------------------------------------------------------------------------
+st.markdown(h("""
+<div class="app-header">
+    <div class="app-title">⚙️ MACHINE SPECIFICATION SYSTEM</div>
+    <div class="app-subtitle">HEAVY MACHINING &nbsp;·&nbsp; TECHNICAL REFERENCE DATABASE</div>
 </div>
-""", unsafe_allow_html=True)
+"""), unsafe_allow_html=True)
 
-st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
-
-# ================= EXCEL UPLOAD SECTION =================
-
-with st.expander("📂  UPLOAD EXCEL FILE  —  Load a custom machine dataset", expanded=False):
-    st.markdown("""
-    <div style='font-size:0.78rem;color:#8b90a0;margin-bottom:1rem;line-height:1.7;'>
-    Upload your own Excel file to view and query any machine type.
-    The app will automatically detect parameters, units, and machine numbers from your file.
-    <br><br>
-    <b style='color:#c084fc;'>Supported Excel Layouts:</b><br>
-    &nbsp;&nbsp;<b>Layout A (recommended)</b> — First column = <code>Parameter</code>, second = <code>Unit</code> (optional), then machine numbers as column headers<br>
-    &nbsp;&nbsp;<b>Layout B</b> — First column = <code>Machine No.</code>, first row = parameter names, optional second row = units
-    </div>
-    """, unsafe_allow_html=True)
-
-    tcol1, tcol2 = st.columns(2)
-    with tcol1:
-        tpl_a = generate_template_excel("A")
-        st.download_button(
-            "⬇  Download Layout A Template",
-            data=tpl_a,
-            file_name="machine_spec_template_layoutA.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="tpl_a",
-        )
-    with tcol2:
-        tpl_b = generate_template_excel("B")
-        st.download_button(
-            "⬇  Download Layout B Template",
-            data=tpl_b,
-            file_name="machine_spec_template_layoutB.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="tpl_b",
-        )
-
-    st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
-    uploaded_file = st.file_uploader(
-        "Choose an Excel file (.xlsx or .xls)",
-        type=["xlsx", "xls"],
-        key="excel_uploader",
-        label_visibility="collapsed",
+# --------------------------------------------------------------------------
+# Data source: bundled workbook, optionally overridden by an upload
+# --------------------------------------------------------------------------
+with st.expander("📁  UPLOAD EXCEL FILE — Load a custom machine dataset"):
+    uploaded = st.file_uploader(
+        "Workbook must follow the same layout as the built-in file: one sheet "
+        "per machine type, machine numbers on row 2, parameters from row 3 down.",
+        type=["xlsx"],
     )
 
-    if uploaded_file is not None:
-        try:
-            u_mdata, u_specs, u_units, u_groups = parse_uploaded_excel(uploaded_file)
-            st.session_state["uploaded_data"] = (uploaded_file.name, u_mdata, u_specs, u_units, u_groups)
-            st.session_state["active_source"] = "uploaded"
-            st.success(
-                f"✅  Loaded **{uploaded_file.name}** — "
-                f"{len(u_mdata)} machines · {len(u_specs)} parameters detected"
-            )
-        except ValueError as e:
-            st.error(f"❌  {e}")
-            st.session_state["uploaded_data"] = None
-
-    if st.session_state["uploaded_data"] is not None:
-        col_sw1, col_sw2 = st.columns(2)
-        with col_sw1:
-            if st.button("✅  USE UPLOADED FILE", key="use_uploaded"):
-                st.session_state["active_source"] = "uploaded"
-        with col_sw2:
-            if st.button("🔁  SWITCH TO BUILT-IN DATA", key="use_builtin"):
-                st.session_state["active_source"] = "builtin"
-
-st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
-
-# ================= RESOLVE ACTIVE DATA SOURCE =================
-
-active_source = st.session_state["active_source"]
-
-if active_source == "uploaded" and st.session_state["uploaded_data"] is not None:
-    u_name, u_mdata, u_specs, u_units, u_groups = st.session_state["uploaded_data"]
-    active_accent = UPLOADED_ACCENT
-    mdata    = u_mdata
-    specs    = u_specs
-    units    = u_units
-    groups   = u_groups
-    machine_numbers = sorted(mdata.keys())
-
-    st.markdown(f"""
-    <div style='background:#12151f;border:1px solid #2a2e3e;border-left:3px solid {active_accent};
-    border-radius:3px;padding:0.55rem 1.1rem;margin-bottom:0.8rem;display:flex;align-items:center;gap:1rem;'>
-      <span class='source-badge-uploaded'>Uploaded File</span>
-      <span style='font-size:0.85rem;font-weight:600;color:#e8eaf0;'>{u_name}</span>
-      <span style='margin-left:auto;font-size:0.68rem;color:#6b7080;'>
-        {len(mdata)} machines &nbsp;·&nbsp; {len(specs)} parameters
-      </span>
-    </div>
-    """, unsafe_allow_html=True)
-
+using_custom = uploaded is not None
+if using_custom:
+    sheets = load_workbook(uploaded.getvalue())
+    st.success(f"Loaded custom dataset: **{uploaded.name}** ({len(sheets)} machine type sheet(s))")
 else:
-    # ── Built-in mode: show machine type selector ──────────────────────────
-    active_type = st.session_state["machine_type"]
-    active_accent = TYPE_ACCENT[active_type]
+    sheets = load_default_workbook()
+    # Only PM, HB, and Lathe are in scope for this system - drop any other
+    # sheet that happens to be in the workbook (e.g. GC).
+    sheets = {k: v for k, v in sheets.items() if k.strip().upper() in {"PM", "HB", "LATHE", "LT"}}
 
-    st.markdown("""
-    <div style='font-size:0.7rem;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;
-    color:#6b7080;margin-bottom:0.6rem;padding-left:0.2rem;'>Select Machine Type</div>
-    """, unsafe_allow_html=True)
+if not sheets:
+    st.error("No valid sheets found in the workbook. Check the file layout and try again.")
+    st.stop()
 
-    type_col1, type_col2, type_col3, _ = st.columns([1, 1, 1, 2])
-    type_map = [
-        ("PM (Plano Miller)",      "🔧", type_col1, "#f0a500"),
-        ("HB (Horizontal Boring)", "⚙️", type_col2, "#4a9eff"),
-        ("LT (Lathe)",             "🔩", type_col3, "#00c17c"),
-    ]
-    for label, icon, col, col_accent in type_map:
+# --------------------------------------------------------------------------
+# Machine type selector
+# --------------------------------------------------------------------------
+st.markdown('<div class="section-label">Select Machine Type</div>', unsafe_allow_html=True)
+
+sheet_names = list(sheets.keys())
+if "selected_type" not in st.session_state or st.session_state["selected_type"] not in sheet_names:
+    st.session_state["selected_type"] = sheet_names[0]
+
+with st.container(key="type_selector"):
+    cols = st.columns(len(sheet_names))
+    for col, name in zip(cols, sheet_names):
+        meta = get_sheet_meta(name)
+        type_df = sheets[name]
+        is_active = st.session_state["selected_type"] == name
+
+        # Card border matches the button's border exactly (white when active,
+        # neutral dark-grey when inactive) so the two elements read as one
+        # continuous shape. The type's own accent color is still shown via a
+        # top bar, so machine types stay visually distinguishable.
+        bg = "#f5c518" if is_active else "#11141f"
+        border = "#f5c518" if is_active else "#2a2f42"
+        accent = "#f5c518" if is_active else meta["color"]
+        label_color = "#1a1400" if is_active else "#ffffff"
+        count_color = "#5b5220" if is_active else "#9aa3b5"
+
+        # Split "HB (Horizontal Boring)" into a short code always shown and a
+        # descriptive part that's hidden on narrow phones (see .label-full in
+        # the mobile media query) - keeps 3 cards legible side by side.
+        label = meta["label"]
+        if "(" in label:
+            short, _, rest = label.partition("(")
+            short, rest = short.strip(), "(" + rest
+        else:
+            short, rest = label, ""
+
         with col:
-            is_active = (active_type == label)
-            bg  = col_accent if is_active else "transparent"
-            fg  = "#0f1117"  if is_active else col_accent
-            cnt = len(BUILTIN_REGISTRY[label][0])
-            st.markdown(f"""
-            <div style='background:{bg};border:1px solid {col_accent};border-radius:4px;
-            padding:0.75rem 1rem;text-align:center;margin-bottom:0.25rem;cursor:default;'>
-              <div style='font-size:1.3rem;line-height:1;'>{icon}</div>
-              <div style='font-size:0.72rem;font-weight:700;color:{fg};letter-spacing:0.08em;
-              text-transform:uppercase;margin-top:0.35rem;'>{label}</div>
-              <div style='font-size:0.65rem;color:{"#0f1117" if is_active else "#6b7080"};margin-top:0.2rem;'>{cnt} machines</div>
-            </div>""", unsafe_allow_html=True)
-            if st.button(f"{'✓ Active' if is_active else 'Select'}", key=f"typebtn_{label}", use_container_width=True):
-                st.session_state["machine_type"] = label
-                st.session_state["active_source"] = "builtin"
+            st.markdown(h(f"""
+            <div class="type-card" style="background:{bg}; border-left:1px solid {border}; border-right:1px solid {border}; border-bottom:none; border-top:3px solid {accent};">
+                <div class="icon">{meta['icon']}</div>
+                <div class="label" style="color:{label_color};">{short}<span class="label-full">{(' ' + rest) if rest else ''}</span></div>
+                <div class="count" style="color:{count_color};">{type_df.shape[1]} machines</div>
+            </div>
+            """), unsafe_allow_html=True)
+
+            btn_label = "✓ ACTIVE" if is_active else "SELECT"
+            if st.button(btn_label, key=f"select_{name}", use_container_width=True,
+                         type="primary" if is_active else "secondary"):
+                st.session_state["selected_type"] = name
                 st.rerun()
 
-    st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
-    mdata, specs, units, groups = BUILTIN_REGISTRY[active_type]
-    machine_numbers = sorted(mdata.keys())
+selected_type = st.session_state["selected_type"]
+df = sheets[selected_type]
+meta = get_sheet_meta(selected_type)
+machine_numbers = list(df.columns)
+parameters = list(df.index)
 
-    st.markdown(f"""
-    <div style='background:#12151f;border:1px solid #2a2e3e;border-left:3px solid {active_accent};
-    border-radius:3px;padding:0.55rem 1.1rem;margin-bottom:1.4rem;display:flex;align-items:center;gap:1rem;'>
-      <span class='source-badge-builtin'>Built-in Data</span>
-      <span style='font-size:0.85rem;font-weight:600;color:#e8eaf0;'>{active_type}</span>
-      <span style='margin-left:auto;font-size:0.68rem;color:#6b7080;'>
-        {len(mdata)} machines &nbsp;·&nbsp; {len(specs)} parameters
-      </span>
+source_label = "CUSTOM UPLOAD" if using_custom else "BUILT-IN DATA"
+st.markdown(h(f"""
+<div class="source-banner">
+    <div>
+        <span class="badge-pill">{source_label}</span>
+        &nbsp;&nbsp;<b style="color:#fff;">{meta['label']}</b>
     </div>
-    """, unsafe_allow_html=True)
+    <div style="color:#9aa3b5; font-size:13px;">
+        {len(machine_numbers)} machines &nbsp;·&nbsp; {len(parameters)} parameters
+    </div>
+</div>
+"""), unsafe_allow_html=True)
 
-# ================= TABS =================
+# --------------------------------------------------------------------------
+# Tabs
+# --------------------------------------------------------------------------
+tab_lookup, tab_compare, tab_full = st.tabs(
+    ["🔍 SPEC LOOKUP", "📊 MACHINE COMPARISON", "📋 FULL SPEC SHEET"]
+)
 
-tab_lookup, tab_compare, tab_full = st.tabs(["SPEC LOOKUP", "MACHINE COMPARISON", "FULL SPEC SHEET"])
-
-# ─── TAB 1: SPEC LOOKUP ──────────────────────────────────────────────────────
+# ---- Tab 1: Spec Lookup ----------------------------------------------------
 with tab_lookup:
-    st.markdown("<div style='height:1.2rem'></div>", unsafe_allow_html=True)
-    col_sel, col_spacer, col_result = st.columns([1, 0.08, 2])
+    left, right = st.columns([1, 2], gap="large")
 
-    with col_sel:
-        st.markdown(f"<div style='font-size:0.7rem;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;color:{active_accent};margin-bottom:0.5rem;'>Select Machine</div>", unsafe_allow_html=True)
-        machine_no = st.selectbox("Machine Number", machine_numbers, key="lookup_machine", label_visibility="collapsed")
-        st.markdown("<div style='height:0.8rem'></div>", unsafe_allow_html=True)
-        st.markdown(f"<div style='font-size:0.7rem;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;color:{active_accent};margin-bottom:0.5rem;'>Select Parameter</div>", unsafe_allow_html=True)
-        specification = st.selectbox("Specification", specs, key="lookup_spec", label_visibility="collapsed")
-        st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
-        check_clicked = st.button("CHECK PARAMETER", use_container_width=True, key="check_btn")
+    with left:
+        st.markdown('<div class="section-label">Select Machine</div>', unsafe_allow_html=True)
+        machine_choice = st.selectbox(
+            "Machine number", machine_numbers, key="lookup_machine", label_visibility="collapsed"
+        )
+        st.markdown('<div class="section-label" style="margin-top:16px;">Select Parameter</div>', unsafe_allow_html=True)
+        param_choice = st.selectbox(
+            "Parameter", parameters, key="lookup_param", label_visibility="collapsed"
+        )
+        st.write("")
+        check = st.button("CHECK PARAMETER", type="primary", use_container_width=True)
 
-    with col_result:
-        if check_clicked:
-            value = mdata[machine_no][specification]
-            unit = units.get(specification, "")
-            is_na = value is None
-            display_val = str(value) if not is_na else "N/A"
-            value_color = "#00c17c" if not is_na else "#3a3e50"
+    with right:
+        if check:
+            st.session_state["last_lookup"] = (machine_choice, param_choice)
 
-            machine_card = (
-                f"<div style='background:#1a1d27;border:1px solid #2a2e3e;border-top:2px solid {active_accent};"
-                "border-radius:4px;padding:1.4rem 1.6rem;text-align:center;flex:1;min-width:130px;'>"
-                "<div style='font-size:0.68rem;letter-spacing:0.12em;text-transform:uppercase;color:#6b7080;margin-bottom:0.5rem;'>Machine No.</div>"
-                f"<div style='font-family:JetBrains Mono,monospace;font-size:2rem;font-weight:600;color:{active_accent};line-height:1;'>{machine_no}</div>"
-                "</div>"
-            )
-            param_card = (
-                "<div style='background:#1a1d27;border:1px solid #2a2e3e;border-top:2px solid #4a9eff;"
-                "border-radius:4px;padding:1.4rem 1.6rem;flex:3;min-width:220px;text-align:center;'>"
-                "<div style='font-size:0.68rem;letter-spacing:0.12em;text-transform:uppercase;color:#6b7080;margin-bottom:0.6rem;'>Parameter</div>"
-                f"<div style='font-family:Inter,sans-serif;font-size:1.15rem;font-weight:600;color:#a8c8ff;line-height:1.4;'>{specification}</div>"
-                "</div>"
-            )
-            value_card = (
-                "<div style='background:#f8f6f2;border:1px solid #d9d4cc;border-top:2px solid #e5dfd6;"
-                "border-radius:4px;padding:2rem 2rem;text-align:center;flex:2;min-width:260px;'>"
-                "<div style='font-size:0.68rem;letter-spacing:0.12em;text-transform:uppercase;color:#666;margin-bottom:0.5rem;'>Value</div>"
-                f"<div style='font-family:JetBrains Mono,monospace;font-size:3rem;font-weight:600;color:{value_color};line-height:1;'>{display_val}</div>"
-                f"<div style='font-size:0.78rem;color:#666;margin-top:6px;'>{unit if not is_na else 'no data'}</div>"
-                "</div>"
-            )
-            st.markdown(
-                f"<div style='background:#12151f;border:1px solid #2a2e3e;border-radius:4px;padding:1.8rem 1.8rem;'>"
-                f"<div style='font-size:0.68rem;letter-spacing:0.14em;text-transform:uppercase;color:{active_accent};margin-bottom:1.2rem;'>Query Result</div>"
-                f"<div style='display:flex;gap:1.2rem;flex-wrap:wrap;'>{machine_card}{param_card}{value_card}</div>"
-                "</div>",
-                unsafe_allow_html=True,
-            )
+        lookup = st.session_state.get("last_lookup")
 
-            stats = get_min_max_machine(specification, mdata)
-            if stats:
-                st.markdown("<div style='height:1.2rem'></div>", unsafe_allow_html=True)
-                col_max, col_min = st.columns(2)
-                with col_max:
-                    st.markdown(f"""
-                    <div style='background:#1a1d27;border:1px solid #2a2e3e;border-top:3px solid #00c17c;border-radius:4px;padding:1.6rem;text-align:center;'>
-                        <div style='color:#00c17c;font-size:0.75rem;font-weight:600;text-transform:uppercase;'>Maximum Value</div>
-                        <div style='color:white;font-size:2rem;font-weight:600;margin-top:0.8rem;'>Machine {stats['max_machine']}</div>
-                        <div style='color:#00c17c;font-size:3rem;font-weight:700;margin-top:0.8rem;'>{stats['max_value']}</div>
-                        <div style='color:#8b90a0;'>{unit}</div>
-                    </div>""", unsafe_allow_html=True)
-                with col_min:
-                    st.markdown(f"""
-                    <div style='background:#1a1d27;border:1px solid #2a2e3e;border-top:3px solid #4a9eff;border-radius:4px;padding:1.6rem;text-align:center;'>
-                        <div style='color:#4a9eff;font-size:0.75rem;font-weight:600;text-transform:uppercase;'>Minimum Value</div>
-                        <div style='color:white;font-size:2rem;font-weight:600;margin-top:0.8rem;'>Machine {stats['min_machine']}</div>
-                        <div style='color:#4a9eff;font-size:3rem;font-weight:700;margin-top:0.8rem;'>{stats['min_value']}</div>
-                        <div style='color:#8b90a0;'>{unit}</div>
-                    </div>""", unsafe_allow_html=True)
+        if lookup and lookup[0] in df.columns and lookup[1] in df.index:
+            m, p = lookup
+            value = df.loc[p, m]
+            has_value = not (value is None or (isinstance(value, float) and pd.isna(value)))
+
+            st.markdown('<div class="section-label">Query Result</div>', unsafe_allow_html=True)
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown(h(f"""
+                <div class="card card-machine">
+                    <div class="card-label">Machine No.</div>
+                    <div class="card-value">{m}</div>
+                </div>
+                """), unsafe_allow_html=True)
+            with c2:
+                st.markdown(h(f"""
+                <div class="card card-parameter">
+                    <div class="card-label">Parameter</div>
+                    <div class="card-value">{p}</div>
+                </div>
+                """), unsafe_allow_html=True)
+            with c3:
+                if has_value:
+                    st.markdown(h(f"""
+                    <div class="card card-result">
+                        <div class="card-label">Value</div>
+                        <div class="card-value">{value}</div>
+                    </div>
+                    """), unsafe_allow_html=True)
+                else:
+                    st.markdown(h("""
+                    <div class="card card-result">
+                        <div class="card-label">Value</div>
+                        <div class="card-value small">N / A</div>
+                        <div class="card-sub">no data recorded</div>
+                    </div>
+                    """), unsafe_allow_html=True)
+
+            # ---- Max / Min across all machines for this parameter ----
+            numeric_row = pd.to_numeric(df.loc[p], errors="coerce").dropna()
+            if len(numeric_row) >= 2:
+                max_machine, max_val = numeric_row.idxmax(), numeric_row.max()
+                min_machine, min_val = numeric_row.idxmin(), numeric_row.min()
+
+                st.write("")
+                mc1, mc2 = st.columns(2)
+                with mc1:
+                    st.markdown(h(f"""
+                    <div class="card card-max">
+                        <div class="card-label">Maximum Value</div>
+                        <div class="machine-name">Machine {max_machine}</div>
+                        <div class="card-value">{max_val:g}</div>
+                    </div>
+                    """), unsafe_allow_html=True)
+                with mc2:
+                    st.markdown(h(f"""
+                    <div class="card card-min">
+                        <div class="card-label">Minimum Value</div>
+                        <div class="machine-name">Machine {min_machine}</div>
+                        <div class="card-value">{min_val:g}</div>
+                    </div>
+                    """), unsafe_allow_html=True)
         else:
-            st.markdown(
-                "<div style='background:#1a1d27;border:1px solid #2a2e3e;border-radius:4px;"
-                "padding:3.5rem 2rem;text-align:center;color:#3a3e50;"
-                "font-size:0.82rem;letter-spacing:0.1em;text-transform:uppercase;'>"
-                "Select a machine and parameter, then press CHECK PARAMETER"
-                "</div>",
-                unsafe_allow_html=True,
-            )
+            st.markdown(h("""
+            <div class="placeholder-card">
+                SELECT A MACHINE AND PARAMETER, THEN PRESS CHECK PARAMETER
+            </div>
+            """), unsafe_allow_html=True)
 
-# ─── TAB 2: COMPARISON ───────────────────────────────────────────────────────
+# ---- Tab 2: Machine Comparison ---------------------------------------------
 with tab_compare:
-    st.markdown("<div style='height:1.2rem'></div>", unsafe_allow_html=True)
-    st.markdown(f"<div style='font-size:0.7rem;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;color:{active_accent};margin-bottom:0.5rem;'>Select Machines to Compare</div>", unsafe_allow_html=True)
-    selected_machines = st.multiselect(
-        "Machines", machine_numbers,
-        default=machine_numbers[:min(3, len(machine_numbers))],
+    st.markdown('<div class="section-label">Select Machines to Compare</div>', unsafe_allow_html=True)
+    compare_machines = st.multiselect(
+        "Machines", machine_numbers, default=machine_numbers[: min(3, len(machine_numbers))],
         key="compare_machines", label_visibility="collapsed",
     )
 
-    if len(selected_machines) < 2:
-        st.info("Select at least 2 machines to generate a comparison.")
-    else:
-        hide_empty = st.checkbox("Hide parameters with no data across all selected machines", value=True)
-        df_compare = build_comparison_df(selected_machines, mdata, specs, units)
-        if hide_empty:
-            machine_cols = ["Machine {}".format(m) for m in selected_machines]
-            mask = df_compare[machine_cols].apply(lambda row: any(v != "—" for v in row), axis=1)
-            df_compare = df_compare[mask].reset_index(drop=True)
-        st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
-        st.dataframe(df_compare, use_container_width=True, hide_index=True,
-                     height=min(60 + len(df_compare) * 35, 620))
-        st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
-        csv = df_compare.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "EXPORT COMPARISON — CSV", data=csv,
-            file_name="comparison_{}.csv".format("_".join(str(m) for m in selected_machines)),
-            mime="text/csv",
-        )
-
-# ─── TAB 3: FULL SPEC SHEET ──────────────────────────────────────────────────
-with tab_full:
-    st.markdown("<div style='height:1.2rem'></div>", unsafe_allow_html=True)
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        st.markdown(f"<div style='font-size:0.7rem;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;color:{active_accent};margin-bottom:0.5rem;'>Select Machine</div>", unsafe_allow_html=True)
-        machine_fs = st.selectbox("Machine", machine_numbers, key="full_machine", label_visibility="collapsed")
-        show_only_available = st.checkbox("Show available parameters only", value=False)
-    with c2:
-        avail_fs = count_available(machine_fs, mdata, specs)
-        pct = int(avail_fs / len(specs) * 100)
-        st.markdown(f"""
-        <div style='display:flex;gap:1rem;flex-wrap:wrap;'>
-            <div class='metric-card' style='min-width:140px;'><div class='metric-label'>Machine No.</div><div class='metric-value'>{machine_fs}</div></div>
-            <div class='metric-card' style='min-width:140px;'><div class='metric-label'>Parameters on Record</div><div class='metric-value'>{avail_fs}</div><div class='metric-unit'>of {len(specs)} total</div></div>
-            <div class='metric-card' style='min-width:140px;'><div class='metric-label'>Data Coverage</div><div class='metric-value'>{pct}%</div></div>
-        </div>""", unsafe_allow_html=True)
-
-    st.markdown("<div style='height:1.2rem'></div>", unsafe_allow_html=True)
-    export_rows = []
-    for idx, spec in enumerate(specs):
-        v = mdata[machine_fs][spec]
-        if show_only_available and v is None:
-            continue
-        export_rows.append({"#": str(idx + 1).zfill(2), "Parameter": spec, "Value": format_value(spec, v, units)})
-    df_full = pd.DataFrame(export_rows)
-    st.dataframe(df_full, use_container_width=True, hide_index=True,
-                 height=min(60 + len(df_full) * 35, 660))
-    st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
-    csv_full = df_full.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "EXPORT MACHINE {} SPECS — CSV".format(machine_fs),
-        data=csv_full,
-        file_name="machine_{}_specifications.csv".format(machine_fs),
-        mime="text/csv",
+    st.markdown('<div class="section-label" style="margin-top:16px;">Select Parameters (leave empty for all)</div>', unsafe_allow_html=True)
+    compare_params = st.multiselect(
+        "Parameters", parameters, key="compare_params", label_visibility="collapsed"
     )
+
+    st.write("")
+    if compare_machines:
+        rows = compare_params if compare_params else parameters
+        comp_df = df.loc[rows, compare_machines]
+        comp_df = comp_df.dropna(how="all")
+        st.dataframe(comp_df, use_container_width=True, height=min(600, 45 + 35 * len(comp_df)))
+
+        csv = comp_df.to_csv().encode("utf-8")
+        st.download_button(
+            "⬇ Download comparison as CSV", csv,
+            file_name=f"{selected_type}_comparison.csv", mime="text/csv",
+        )
+    else:
+        st.info("Select at least one machine to compare.")
+
+# ---- Tab 3: Full Spec Sheet -------------------------------------------------
+with tab_full:
+    search = st.text_input("🔎 Filter parameters", placeholder="e.g. spindle, travel, load...")
+    display_df = df.copy()
+    if search:
+        display_df = display_df[display_df.index.str.contains(search, case=False, na=False)]
+
+    st.dataframe(display_df, use_container_width=True, height=min(700, 45 + 35 * len(display_df)))
+
+    csv_full = display_df.to_csv().encode("utf-8")
+    st.download_button(
+        "⬇ Download full spec sheet as CSV", csv_full,
+        file_name=f"{selected_type}_full_spec_sheet.csv", mime="text/csv",
+    )
+
+st.markdown(h("""
+<div class="app-footer">
+    Machine Specification System &nbsp;·&nbsp; data-driven from Excel &nbsp;·&nbsp; built for industrial use
+</div>
+"""), unsafe_allow_html=True)
