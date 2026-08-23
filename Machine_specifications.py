@@ -45,66 +45,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# --------------------------------------------------------------------------
-# PWA: makes the app installable ("Add to Home Screen") on Android/iOS.
-# Streamlit renders inside an iframe, so we reach into the parent window
-# to inject the manifest link, icon, title, and theme-color into the real
-# page <head>. Streamlit's own app shell already ships a default manifest
-# / title ("Streamlit", red icon) - so instead of only adding these tags
-# when absent (which silently no-ops because Streamlit's own tags are
-# already there), we find-or-create each tag and force its value, so ours
-# always wins over Streamlit's defaults.
-# --------------------------------------------------------------------------
-import streamlit.components.v1 as components
-
-components.html("""
-<script>
-  const doc = window.parent.document;
-
-  // Manifest link - override href even if Streamlit already added one.
-  let link = doc.querySelector('link[rel="manifest"]');
-  if (!link) {
-    link = doc.createElement('link');
-    link.rel = 'manifest';
-    doc.head.appendChild(link);
-  }
-  link.href = './app/static/manifest.json';
-
-  // Theme color meta - override content even if already present.
-  let meta = doc.querySelector('meta[name="theme-color"]');
-  if (!meta) {
-    meta = doc.createElement('meta');
-    meta.name = 'theme-color';
-    doc.head.appendChild(meta);
-  }
-  meta.content = '#181c24';
-
-  // Apple touch icon - override href even if already present.
-  let appleIcon = doc.querySelector('link[rel="apple-touch-icon"]');
-  if (!appleIcon) {
-    appleIcon = doc.createElement('link');
-    appleIcon.rel = 'apple-touch-icon';
-    doc.head.appendChild(appleIcon);
-  }
-  appleIcon.href = './app/static/icon-192.png';
-
-  // Regular favicon too, so browser tabs/shortcuts show the right icon.
-  let favicon = doc.querySelector('link[rel="icon"]');
-  if (!favicon) {
-    favicon = doc.createElement('link');
-    favicon.rel = 'icon';
-    doc.head.appendChild(favicon);
-  }
-  favicon.href = './app/static/icon-192.png';
-  favicon.type = 'image/png';
-
-  // Page title - override Streamlit's default "Streamlit" title, which
-  // Android uses as a fallback name if it treats this as a plain
-  // shortcut rather than a full installable PWA.
-  doc.title = 'Machine Specification System';
-</script>
-""", height=0)
-
 st.markdown(h("""
 <style>
     .stApp { background-color: #0b0e17; }
@@ -215,28 +155,75 @@ st.markdown(h("""
         box-shadow: none !important;
     }
 
-    /* ---- type-selector cards: make the WHOLE card clickable ----
-       Each card lives inside its own st.container(key=f"cardwrap_{name}"),
-       which Streamlit marks with a stable, public class "st-key-cardwrap_*"
-       (documented feature - safe to rely on, unlike internal data-testid
-       names). Inside that container we just say "any <button>, however
-       deeply nested" and stretch it to fill the container - this doesn't
-       reference any Streamlit-internal wrapper names, so a future
-       Streamlit version can restructure its internal HTML freely without
-       breaking this rule. */
-    div[class*="st-key-cardwrap_"] {
+    /* ---- type-selector cards only: stretch the (invisible) button's own
+       container to exactly fill the card's column, using each button's
+       key-derived class (st-key-select_<TYPE>) rather than a hardcoded
+       pixel size. The column is the positioning anchor; the card (in
+       normal flow) sets the column's height; the button (taken out of
+       flow via absolute positioning) exactly matches that height and
+       covers 100% of the card, at any screen size, with no drift. ---- */
+    div.st-key-type_selector div[data-testid="stColumn"] {
         position: relative !important;
     }
-    div[class*="st-key-cardwrap_"] button {
+    /* The chain of wrapper divs between the column and our .type-card can
+       otherwise end up shorter than the card's real rendered height (a
+       stale auto-height calculation from Streamlit), which would leave
+       part of the card outside the click overlay below. Forcing every
+       link in that chain to auto-size to its content keeps the column's
+       height (and therefore the overlay's height) exactly equal to the
+       card's real height. */
+    div.st-key-type_selector div[data-testid="stElementContainer"],
+    div.st-key-type_selector div[data-testid="stElementContainer"] > div,
+    div.st-key-type_selector div[data-testid="stMarkdown"],
+    div.st-key-type_selector div[data-testid="stMarkdown"] > div,
+    div.st-key-type_selector div[data-testid="stMarkdownContainer"] {
+        height: auto !important;
+        display: block !important;
+        -webkit-line-clamp: unset !important;
+    }
+    div.st-key-type_selector div.stElementContainer[class*="st-key-select_"] {
         position: absolute !important;
-        inset: 0 !important;
-        width: 100% !important;
-        height: 100% !important;
-        min-height: 0 !important;
-        opacity: 0 !important;
-        border: none !important;
-        cursor: pointer;
+        top: 0 !important; left: 0 !important; right: 0 !important;
+        /* The parent flex column has "gap: 1rem" between its children.
+           Even though this element is taken out of flow via absolute
+           positioning, that gap still shows up missing from the
+           containing block's height - so the plain "bottom: 0" edge sits
+           1rem short of the card's real bottom edge. Extend past it by
+           exactly that amount so the overlay always covers 100% of the
+           card, regardless of the card's actual rendered height. */
+        height: calc(100% + 1rem) !important;
         z-index: 5 !important;
+    }
+    div.st-key-type_selector div.stElementContainer[class*="st-key-select_"] div[data-testid="stButton"] {
+        height: 100% !important;
+        position: relative !important;
+    }
+    /* When a button has a tooltip (help=...), Streamlit wraps the actual
+       clickable button several layers deep (stTooltipIcon >
+       stTooltipHoverTarget > button) in plain, unstyled divs/spans that
+       have no explicit height of their own. "height: 100%" on the button
+       can't inherit through an auto-height ancestor, so it was collapsing
+       to the button's own intrinsic text height (~30px) and only that
+       thin strip at the top of the card was actually clickable - the
+       rest of the card (icon, label, count) looked clickable but wasn't.
+       Taking the button out of flow with "position: absolute" sidesteps
+       the whole wrapper chain: it's positioned directly against the
+       nearest positioned ancestor (stButton, set to position:relative
+       above), so it fills the full card regardless of what unstyled
+       divs sit in between. This targets every button inside the
+       select_* container, including Streamlit's duplicate tooltip-hover
+       button, so whichever one is actually rendered fills the card. */
+    div.st-key-type_selector div.stElementContainer[class*="st-key-select_"] button {
+        position: absolute !important;
+        top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
+        width: 100% !important; height: 100% !important; min-height: 0 !important;
+        background: transparent !important; border: none !important;
+        color: transparent !important; cursor: pointer;
+    }
+    div.st-key-type_selector div.stElementContainer[class*="st-key-select_"] button:hover,
+    div.st-key-type_selector div.stElementContainer[class*="st-key-select_"] button:focus {
+        background: transparent !important; border: none !important;
+        color: transparent !important;
     }
 
     /* ---- mobile tightening ---- */
@@ -428,30 +415,19 @@ with st.container(key="type_selector"):
         else:
             short, rest = label, ""
 
-        card_html = h(f"""
-        <div class="type-card" style="background:{bg}; border:1px solid {border}; border-top:3px solid {accent};">
-            <div class="icon">{meta['icon']}</div>
-            <div class="label" style="color:{'#1a1400' if is_active else '#ffffff'};">{short}</div>
-            <div class="count" style="color:{'#5b5220' if is_active else '#9aa3b5'};">{type_df.shape[1]} machines</div>
-        </div>
-        """)
-
         with col:
-            # Each card + its (invisible) button live inside their own
-            # st.container(key=...). Streamlit gives that container's
-            # wrapper div a stable, public class: "st-key-<key>" - this is
-            # a documented feature, unlike internal data-testid attributes,
-            # so it won't get renamed on a Streamlit upgrade. The CSS below
-            # then just says "any <button> anywhere inside this container,
-            # however deeply nested" - it doesn't care what Streamlit calls
-            # the wrapper divs in between, so it can't break from a version
-            # bump the way testid-based selectors did.
-            with st.container(key=f"cardwrap_{name}"):
-                st.markdown(card_html, unsafe_allow_html=True)
-                if st.button(f"Select {short}", key=f"select_{name}", use_container_width=True,
-                             help=rest.strip("() ") or None):
-                    st.session_state["selected_type"] = name
-                    st.rerun()
+            st.markdown(h(f"""
+            <div class="type-card" style="background:{bg}; border:1px solid {border}; border-top:3px solid {accent};">
+                <div class="icon">{meta['icon']}</div>
+                <div class="label" style="color:{'#1a1400' if is_active else '#ffffff'};">{short}</div>
+                <div class="count" style="color:{'#5b5220' if is_active else '#9aa3b5'};">{type_df.shape[1]} machines</div>
+            </div>
+            """), unsafe_allow_html=True)
+
+            if st.button(f"Select {short}", key=f"select_{name}", use_container_width=True,
+                         help=rest.strip("() ") or None):
+                st.session_state["selected_type"] = name
+                st.rerun()
 
 selected_type = st.session_state["selected_type"]
 df = sheets[selected_type]
