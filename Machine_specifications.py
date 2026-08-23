@@ -45,38 +45,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# --------------------------------------------------------------------------
-# PWA: makes the app installable ("Add to Home Screen") on Android/iOS.
-# Streamlit renders inside an iframe, so we reach into the parent window
-# to inject the manifest link and a theme-color meta tag into the real
-# page <head>.
-# --------------------------------------------------------------------------
-import streamlit.components.v1 as components
-
-components.html("""
-<script>
-  const doc = window.parent.document;
-  if (!doc.querySelector('link[rel="manifest"]')) {
-    const link = doc.createElement('link');
-    link.rel = 'manifest';
-    link.href = './app/static/manifest.json';
-    doc.head.appendChild(link);
-  }
-  if (!doc.querySelector('meta[name="theme-color"]')) {
-    const meta = doc.createElement('meta');
-    meta.name = 'theme-color';
-    meta.content = '#181c24';
-    doc.head.appendChild(meta);
-  }
-  if (!doc.querySelector('link[rel="apple-touch-icon"]')) {
-    const appleIcon = doc.createElement('link');
-    appleIcon.rel = 'apple-touch-icon';
-    appleIcon.href = './app/static/icon-192.png';
-    doc.head.appendChild(appleIcon);
-  }
-</script>
-""", height=0)
-
 st.markdown(h("""
 <style>
     .stApp { background-color: #0b0e17; }
@@ -126,9 +94,10 @@ st.markdown(h("""
        flow), the button always exactly covers the card, at any size,
        automatically. */
     .type-card {
-        border-radius: 10px 10px 0 0; padding: 14px 8px 12px; text-align: center;
-        box-sizing: border-box; border-bottom: none;
+        border-radius: 10px; padding: 12px 8px; text-align: center;
+        box-sizing: border-box;
         display: flex; flex-direction: column; align-items: center; justify-content: center;
+        position: relative; z-index: 1;
     }
     .type-card .icon { font-size: 17px; line-height: 1; }
     .type-card .label { font-size: 16px; font-weight: 800; margin-top: 7px; }
@@ -186,24 +155,57 @@ st.markdown(h("""
         box-shadow: none !important;
     }
 
-    /* ---- type-selector cards: a plain, always-clickable button sits
-       directly under each card and is pulled flush against it (no gap,
-       matching rounded corners), so the two read as one control. This
-       does NOT depend on any Streamlit-internal element names, so it
-       can't break when Streamlit renames its internal HTML attributes
-       in a future version - unlike an invisible full-card overlay
-       would. Slightly less seamless, but reliably clickable. ---- */
-    div.st-key-type_selector div.stButton,
-    div.st-key-type_selector div[data-testid="stButton"],
-    div.st-key-type_selector div[class*="stButton"] {
-        margin-top: -1px !important;
+    /* ---- type-selector cards only: stretch the (invisible) button's own
+       container to exactly fill the card's column, using each button's
+       key-derived class (st-key-select_<TYPE>) rather than a hardcoded
+       pixel size. The column is the positioning anchor; the card (in
+       normal flow) sets the column's height; the button (taken out of
+       flow via absolute positioning) exactly matches that height and
+       covers 100% of the card, at any screen size, with no drift. ---- */
+    div.st-key-type_selector div[data-testid="stColumn"] {
+        position: relative !important;
     }
-    div.st-key-type_selector div.stButton button,
-    div.st-key-type_selector div[data-testid="stButton"] button,
-    div.st-key-type_selector div[class*="stButton"] button {
-        border-radius: 0 0 8px 8px !important;
-        border-top: none !important;
-        font-size: 11px !important;
+    /* The chain of wrapper divs between the column and our .type-card can
+       otherwise end up shorter than the card's real rendered height (a
+       stale auto-height calculation from Streamlit), which would leave
+       part of the card outside the click overlay below. Forcing every
+       link in that chain to auto-size to its content keeps the column's
+       height (and therefore the overlay's height) exactly equal to the
+       card's real height. */
+    div.st-key-type_selector div[data-testid="stElementContainer"],
+    div.st-key-type_selector div[data-testid="stElementContainer"] > div,
+    div.st-key-type_selector div[data-testid="stMarkdown"],
+    div.st-key-type_selector div[data-testid="stMarkdown"] > div,
+    div.st-key-type_selector div[data-testid="stMarkdownContainer"] {
+        height: auto !important;
+        display: block !important;
+        -webkit-line-clamp: unset !important;
+    }
+    div.st-key-type_selector div.stElementContainer[class*="st-key-select_"] {
+        position: absolute !important;
+        top: 0 !important; left: 0 !important; right: 0 !important;
+        /* The parent flex column has "gap: 1rem" between its children.
+           Even though this element is taken out of flow via absolute
+           positioning, that gap still shows up missing from the
+           containing block's height - so the plain "bottom: 0" edge sits
+           1rem short of the card's real bottom edge. Extend past it by
+           exactly that amount so the overlay always covers 100% of the
+           card, regardless of the card's actual rendered height. */
+        height: calc(100% + 1rem) !important;
+        z-index: 5 !important;
+    }
+    div.st-key-type_selector div.stElementContainer[class*="st-key-select_"] div[data-testid="stButton"] {
+        height: 100% !important;
+    }
+    div.st-key-type_selector div.stElementContainer[class*="st-key-select_"] button {
+        height: 100% !important; min-height: 0 !important;
+        background: transparent !important; border: none !important;
+        color: transparent !important; cursor: pointer;
+    }
+    div.st-key-type_selector div.stElementContainer[class*="st-key-select_"] button:hover,
+    div.st-key-type_selector div.stElementContainer[class*="st-key-select_"] button:focus {
+        background: transparent !important; border: none !important;
+        color: transparent !important;
     }
 
     /* ---- mobile tightening ---- */
@@ -397,16 +399,14 @@ with st.container(key="type_selector"):
 
         with col:
             st.markdown(h(f"""
-            <div class="type-card" style="background:{bg}; border-left:1px solid {border}; border-right:1px solid {border}; border-bottom:none; border-top:3px solid {accent};">
+            <div class="type-card" style="background:{bg}; border:1px solid {border}; border-top:3px solid {accent};">
                 <div class="icon">{meta['icon']}</div>
                 <div class="label" style="color:{'#1a1400' if is_active else '#ffffff'};">{short}</div>
                 <div class="count" style="color:{'#5b5220' if is_active else '#9aa3b5'};">{type_df.shape[1]} machines</div>
             </div>
             """), unsafe_allow_html=True)
 
-            btn_label = "✓ ACTIVE" if is_active else "SELECT"
-            if st.button(btn_label, key=f"select_{name}", use_container_width=True,
-                         type="primary" if is_active else "secondary",
+            if st.button(f"Select {short}", key=f"select_{name}", use_container_width=True,
                          help=rest.strip("() ") or None):
                 st.session_state["selected_type"] = name
                 st.rerun()
