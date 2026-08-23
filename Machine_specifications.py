@@ -45,38 +45,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# --------------------------------------------------------------------------
-# PWA: makes the app installable ("Add to Home Screen") on Android/iOS.
-# Streamlit renders inside an iframe, so we reach into the parent window
-# to inject the manifest link and a theme-color meta tag into the real
-# page <head>.
-# --------------------------------------------------------------------------
-import streamlit.components.v1 as components
-
-components.html("""
-<script>
-  const doc = window.parent.document;
-  if (!doc.querySelector('link[rel="manifest"]')) {
-    const link = doc.createElement('link');
-    link.rel = 'manifest';
-    link.href = './app/static/manifest.json';
-    doc.head.appendChild(link);
-  }
-  if (!doc.querySelector('meta[name="theme-color"]')) {
-    const meta = doc.createElement('meta');
-    meta.name = 'theme-color';
-    meta.content = '#181c24';
-    doc.head.appendChild(meta);
-  }
-  if (!doc.querySelector('link[rel="apple-touch-icon"]')) {
-    const appleIcon = doc.createElement('link');
-    appleIcon.rel = 'apple-touch-icon';
-    appleIcon.href = './app/static/icon-192.png';
-    doc.head.appendChild(appleIcon);
-  }
-</script>
-""", height=0)
-
 st.markdown(h("""
 <style>
     .stApp { background-color: #0b0e17; }
@@ -228,9 +196,27 @@ st.markdown(h("""
     }
     div.st-key-type_selector div.stElementContainer[class*="st-key-select_"] div[data-testid="stButton"] {
         height: 100% !important;
+        position: relative !important;
     }
+    /* When a button has a tooltip (help=...), Streamlit wraps the actual
+       clickable button several layers deep (stTooltipIcon >
+       stTooltipHoverTarget > button) in plain, unstyled divs/spans that
+       have no explicit height of their own. "height: 100%" on the button
+       can't inherit through an auto-height ancestor, so it was collapsing
+       to the button's own intrinsic text height (~30px) and only that
+       thin strip at the top of the card was actually clickable - the
+       rest of the card (icon, label, count) looked clickable but wasn't.
+       Taking the button out of flow with "position: absolute" sidesteps
+       the whole wrapper chain: it's positioned directly against the
+       nearest positioned ancestor (stButton, set to position:relative
+       above), so it fills the full card regardless of what unstyled
+       divs sit in between. This targets every button inside the
+       select_* container, including Streamlit's duplicate tooltip-hover
+       button, so whichever one is actually rendered fills the card. */
     div.st-key-type_selector div.stElementContainer[class*="st-key-select_"] button {
-        height: 100% !important; min-height: 0 !important;
+        position: absolute !important;
+        top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
+        width: 100% !important; height: 100% !important; min-height: 0 !important;
         background: transparent !important; border: none !important;
         color: transparent !important; cursor: pointer;
     }
