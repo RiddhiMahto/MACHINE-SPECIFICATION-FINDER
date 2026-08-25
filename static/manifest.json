@@ -1,0 +1,20 @@
+{
+  "short_name": "MSS",
+  "name": "Machine Specification System",
+  "icons": [
+    {
+      "src": "favicon_512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/https://machine-specification-finder-7o5wndbtkexwmsccuhg5wm.streamlit.app/",
+  "display": "standalone",
+  "theme_color": "#181c24",
+  "background_color": "#181c24",
+  "id": "https://machine-specification-finder-7o5wndbtkexwmsccuhg5wm.streamlit.app/",
+  "dir": "ltr",
+  "scope": "https://machine-specification-finder-7o5wndbtkexwmsccuhg5wm.streamlit.app/",
+  "lang": "en",
+  "orientation": "portrait-primary"
+}
