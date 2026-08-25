@@ -45,6 +45,33 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+import streamlit.components.v1 as components
+
+RAW = "https://raw.githubusercontent.com/RiddhiMahto/MACHINE-SPECIFICATION-FINDER/main/static"
+
+components.html(f"""
+<script>
+(function() {{
+  const doc = window.parent.document;
+  doc.querySelectorAll(
+    'link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"], link[rel="manifest"]'
+  ).forEach(el => el.remove());
+
+  const add = (rel, href, extra = {{}}) => {{
+    const l = doc.createElement('link');
+    l.rel = rel; l.href = href;
+    Object.entries(extra).forEach(([k, v]) => l.setAttribute(k, v));
+    doc.head.appendChild(l);
+  }};
+
+  add('manifest', '{RAW}/manifest.json');
+  add('icon', '{RAW}/icon-192.png', {{sizes: '192x192', type: 'image/png'}});
+  add('icon', '{RAW}/icon-512.png', {{sizes: '512x512', type: 'image/png'}});
+  add('apple-touch-icon', '{RAW}/icon-192.png');
+}})();
+</script>
+""", height=0)
+
 st.markdown(h("""
 <style>
     .stApp { background-color: #0b0e17; }
